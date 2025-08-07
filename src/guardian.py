@@ -21,16 +21,29 @@ class AppGuardian:
     负责监控应用状态并在必要时重启应用
     """
     
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, adb_manager=None):
         """初始化应用守护器
         
         Args:
             config: 配置字典
+            adb_manager: ADB管理器实例
         """
         self.config = config
         self.restart_count = 0
         self.last_restart: Optional[datetime] = None
         self.cooldown_until: Optional[datetime] = None
+        self.adb_manager = adb_manager
+        
+    def _get_adb_prefix(self) -> str:
+        """获取ADB命令前缀
+        
+        Returns:
+            str: ADB命令前缀
+        """
+        if self.adb_manager:
+            return self.adb_manager.get_adb_prefix()
+        else:
+            return "adb"
         
     async def start(self):
         """启动守护器"""
@@ -82,7 +95,8 @@ class AppGuardian:
             # 启动应用
             package = self.config['app']['package_name']
             activity = self.config['app']['activity_name']
-            cmd = f"adb shell am start -n {package}/{activity}"
+            adb_prefix = self._get_adb_prefix()
+            cmd = f"{adb_prefix} shell am start -n {package}/{activity}"
             
             process = await asyncio.create_subprocess_shell(
                 cmd,
@@ -160,7 +174,8 @@ class AppGuardian:
         """强制停止应用"""
         try:
             package = self.config['app']['package_name']
-            cmd = f"adb shell am force-stop {package}"
+            adb_prefix = self._get_adb_prefix()
+            cmd = f"{adb_prefix} shell am force-stop {package}"
             
             process = await asyncio.create_subprocess_shell(
                 cmd,
@@ -181,7 +196,8 @@ class AppGuardian:
         """
         try:
             package = self.config['app']['package_name']
-            cmd = f"adb shell pm list packages | grep {package}"
+            adb_prefix = self._get_adb_prefix()
+            cmd = f"{adb_prefix} shell pm list packages | grep {package}"
             
             process = await asyncio.create_subprocess_shell(
                 cmd,
@@ -204,9 +220,10 @@ class AppGuardian:
         """
         try:
             package = self.config['app']['package_name']
+            adb_prefix = self._get_adb_prefix()
             
             # 获取应用版本信息
-            version_cmd = f"adb shell dumpsys package {package} | grep versionName"
+            version_cmd = f"{adb_prefix} shell dumpsys package {package} | grep versionName"
             process = await asyncio.create_subprocess_shell(
                 version_cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -220,7 +237,7 @@ class AppGuardian:
                 version = version_output.split("versionName=")[1].split()[0]
                 
             # 获取应用安装时间
-            install_cmd = f"adb shell dumpsys package {package} | grep firstInstallTime"
+            install_cmd = f"{adb_prefix} shell dumpsys package {package} | grep firstInstallTime"
             process = await asyncio.create_subprocess_shell(
                 install_cmd,
                 stdout=asyncio.subprocess.PIPE,

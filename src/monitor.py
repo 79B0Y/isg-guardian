@@ -43,17 +43,30 @@ class ProcessMonitor:
     负责监控目标Android应用的运行状态
     """
     
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, adb_manager=None):
         """初始化进程监控器
         
         Args:
             config: 配置字典
+            adb_manager: ADB管理器实例
         """
         self.config = config
         self.package_name = config['app']['package_name']
         self.last_pid = None
         self.start_time = None
         self.last_seen_running = False
+        self.adb_manager = adb_manager
+        
+    def _get_adb_prefix(self) -> str:
+        """获取ADB命令前缀
+        
+        Returns:
+            str: ADB命令前缀
+        """
+        if self.adb_manager:
+            return self.adb_manager.get_adb_prefix()
+        else:
+            return "adb"
         
     async def start(self):
         """启动监控器"""
@@ -67,7 +80,8 @@ class ProcessMonitor:
         """
         try:
             # 使用pidof检查Android应用进程
-            cmd = f"adb shell pidof {self.package_name}"
+            adb_prefix = self._get_adb_prefix()
+            cmd = f"{adb_prefix} shell pidof {self.package_name}"
             result = await self._run_command(cmd)
             
             if result.returncode == 0 and result.stdout.strip():
@@ -171,7 +185,8 @@ class ProcessMonitor:
             float: 内存使用量（MB）
         """
         try:
-            cmd = f"adb shell cat /proc/{pid}/status"
+            adb_prefix = self._get_adb_prefix()
+            cmd = f"{adb_prefix} shell cat /proc/{pid}/status"
             result = await self._run_command(cmd)
             
             if result.returncode == 0:

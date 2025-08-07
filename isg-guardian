@@ -84,13 +84,15 @@ class ISGGuardian:
         # 加载配置
         self.config = self._load_config()
         
-        # 初始化组件
-        self.monitor = ProcessMonitor(self.config)
-        self.logger = CrashLogger(self.config)
-        self.app_guardian = AppGuardian(self.config)
+        # 初始化ADB管理器
+        self.adb_manager = ADBManager(self.config)
+        
+        # 初始化其他组件，传入ADB管理器
+        self.monitor = ProcessMonitor(self.config, self.adb_manager)
+        self.logger = CrashLogger(self.config, self.adb_manager)
+        self.app_guardian = AppGuardian(self.config, self.adb_manager)
         self.mqtt = MQTTPublisher(self.config) if self.config['mqtt']['enabled'] else None
         self.mqtt_subscriber = MQTTSubscriber(self.config) if self.config['mqtt']['enabled'] else None
-        self.adb_manager = ADBManager(self.config)
         self.running = False
         
     def _load_config(self) -> dict:

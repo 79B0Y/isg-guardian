@@ -36,6 +36,15 @@ class ADBManager:
         self.setup_commands = self.adb_config.get('setup_commands', [])
         self.auto_connect = self.adb_config.get('auto_connect', True)
         self.connection_established = False
+        self.target_device = f"{self.host}:{self.port}"
+        
+    def get_adb_prefix(self) -> str:
+        """获取带设备指定的ADB命令前缀
+        
+        Returns:
+            str: ADB命令前缀，如 'adb -s 127.0.0.1:5555'
+        """
+        return f"adb -s {self.target_device}"
         
     async def start(self):
         """启动ADB管理器"""

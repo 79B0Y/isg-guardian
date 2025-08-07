@@ -1,0 +1,13 @@
+{
+  "timestamp": "2025-08-07T19:18:08.653558",
+  "package_name": "com.linknlink.app.device.isg",
+  "crash_type": "force_stop",
+  "uptime_before_stop": 1800,
+  "memory_usage": 256.5,
+  "pid": 12345,
+  "description": "应用被强制停止或意外终止",
+  "crash_logs": [
+    "[ERROR] ADB连接失败: adb: no devices/emulators found"
+  ],
+  "logcat_lines": 1
+}

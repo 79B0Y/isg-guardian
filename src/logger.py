@@ -23,15 +23,28 @@ class CrashLogger:
     负责收集应用崩溃日志和状态记录
     """
     
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, adb_manager=None):
         """初始化日志收集器
         
         Args:
             config: 配置字典
+            adb_manager: ADB管理器实例
         """
         self.config = config
         self.crash_log_dir = Path(config['logging']['crash_log_dir'])
         self.status_log_file = Path(config['logging']['status_log_file'])
+        self.adb_manager = adb_manager
+        
+    def _get_adb_prefix(self) -> str:
+        """获取ADB命令前缀
+        
+        Returns:
+            str: ADB命令前缀
+        """
+        if self.adb_manager:
+            return self.adb_manager.get_adb_prefix()
+        else:
+            return "adb"
         
     async def start(self):
         """启动日志收集器"""
@@ -129,7 +142,13 @@ class CrashLogger:
                 "description": "应用被强制停止或意外终止"
             }
             
-            # 尝试获取一些相关日志
+            # 获取应用相关的logcat日志
+            app_logs = await self._get_crash_logcat()
+            if app_logs:
+                event_report["crash_logs"] = app_logs[-100:] if len(app_logs) > 100 else app_logs
+                event_report["logcat_lines"] = len(app_logs)
+                
+            # 获取系统相关日志
             recent_logs = await self._get_recent_system_logs()
             if recent_logs:
                 event_report["system_logs"] = recent_logs[-50:]  # 保留最后50行
@@ -154,7 +173,8 @@ class CrashLogger:
         """
         try:
             # 获取最近2分钟的系统相关日志
-            cmd = "adb shell logcat -d -t 120 | grep -E '(ActivityManager|System)'"
+            adb_prefix = self._get_adb_prefix()
+            cmd = f"{adb_prefix} shell logcat -d -t 120 | grep -E '(ActivityManager|System)'"
             process = await asyncio.create_subprocess_shell(
                 cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -178,23 +198,78 @@ class CrashLogger:
             List[str]: 日志行列表
         """
         try:
-            # 获取最近10分钟的应用相关日志
-            cmd = f"adb shell logcat -d -t 600 | grep {self.config['app']['package_name']}"
-            process = await asyncio.create_subprocess_shell(
-                cmd,
+            package_name = self.config['app']['package_name']
+            adb_prefix = self._get_adb_prefix()
+            all_logs = []
+            
+            # 方法1: 获取应用特定日志
+            cmd1 = f"{adb_prefix} shell logcat -d -t 600 | grep {package_name}"
+            process1 = await asyncio.create_subprocess_shell(
+                cmd1,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout, _ = await process.communicate()
+            stdout1, _ = await process1.communicate()
             
-            if stdout:
-                lines = stdout.decode('utf-8', errors='ignore').strip().split('\n')
-                return [line for line in lines if line.strip()]
-            return []
+            if stdout1:
+                lines1 = stdout1.decode('utf-8', errors='ignore').strip().split('\n')
+                all_logs.extend([f"[APP] {line}" for line in lines1 if line.strip()])
+            
+            # 方法2: 获取ActivityManager相关日志（应用启动/停止/崩溃）
+            cmd2 = f"{adb_prefix} shell logcat -d -t 600 | grep -E 'ActivityManager.*{package_name}'"
+            process2 = await asyncio.create_subprocess_shell(
+                cmd2,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout2, _ = await process2.communicate()
+            
+            if stdout2:
+                lines2 = stdout2.decode('utf-8', errors='ignore').strip().split('\n')
+                all_logs.extend([f"[AM] {line}" for line in lines2 if line.strip()])
+            
+            # 方法3: 获取系统服务相关日志
+            cmd3 = f"{adb_prefix} shell logcat -d -t 300 | grep -E '(FATAL|CRASH|ANR|force.stop|am_proc)'"
+            process3 = await asyncio.create_subprocess_shell(
+                cmd3,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout3, _ = await process3.communicate()
+            
+            if stdout3:
+                lines3 = stdout3.decode('utf-8', errors='ignore').strip().split('\n')
+                # 只保留包含包名或与应用相关的系统日志
+                for line in lines3:
+                    if line.strip() and (package_name in line or any(keyword in line.upper() for keyword in ['FORCE', 'STOP', 'KILL'])):
+                        all_logs.append(f"[SYS] {line}")
+            
+            # 如果获取到日志，按时间排序并添加调试信息
+            if all_logs:
+                print(f"📋 获取到 {len(all_logs)} 行相关日志")
+                return all_logs
+            else:
+                # 没有获取到日志时，尝试获取基本的logcat输出以验证ADB连接
+                print("⚠️ 未获取到应用相关日志，检查ADB连接...")
+                test_cmd = f"{adb_prefix} shell logcat -d -t 10"
+                test_process = await asyncio.create_subprocess_shell(
+                    test_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                test_stdout, test_stderr = await test_process.communicate()
+                
+                if test_process.returncode == 0 and test_stdout:
+                    print("✅ ADB连接正常，但应用日志为空")
+                    return [f"[INFO] ADB连接正常，但未找到 {package_name} 相关日志"]
+                else:
+                    error_msg = test_stderr.decode('utf-8', errors='ignore').strip()
+                    print(f"❌ ADB连接问题: {error_msg}")
+                    return [f"[ERROR] ADB连接失败: {error_msg}"]
             
         except Exception as e:
             print(f"❌ 获取崩溃日志失败: {e}")
-            return []
+            return [f"[ERROR] logcat获取异常: {str(e)}"]
             
     def _detect_crash_type(self, logs: List[str]) -> str:
         """检测崩溃类型
