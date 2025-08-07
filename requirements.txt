@@ -1,0 +1,11 @@
+# iSG Guardian - Python Dependencies
+# Minimal dependencies for lightweight operation
+
+# Configuration file parsing
+PyYAML>=6.0
+
+# Async file operations
+aiofiles>=0.8.0
+
+# Process title management
+setproctitle>=1.3.0

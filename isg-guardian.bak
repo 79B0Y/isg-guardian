@@ -1,0 +1,539 @@
+#!/Users/boyao/isg/.venv/bin/python
+"""
+iSG App Guardian - 轻量级应用监控守护服务
+
+专为Termux环境设计的iSG Android应用监控工具
+监控应用进程状态、检测崩溃、记录日志并自动重启应用
+
+使用方法:
+    isg-guardian start      # 启动守护服务
+    isg-guardian stop       # 停止守护服务  
+    isg-guardian restart    # 重启守护服务
+    isg-guardian status     # 查看运行状态
+    isg-guardian logs       # 查看实时日志
+    isg-guardian --help     # 显示帮助信息
+    isg-guardian --version  # 显示版本信息
+"""
+
+import os
+import sys
+import time
+import signal
+import asyncio
+import argparse
+
+try:
+    import yaml
+except ImportError:
+    print("❌ 错误: 缺少必需的Python包 'yaml'")
+    print("请运行: pip install PyYAML")
+    sys.exit(1)
+from pathlib import Path
+from datetime import datetime
+from typing import Optional
+
+# 设置进程名称，便于识别和管理
+try:
+    import setproctitle
+    setproctitle.setproctitle("iSG App Guardian")
+except ImportError:
+    print("警告: setproctitle未安装，进程名称将显示为python")
+
+# 添加src目录到Python路径
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
+# 导入核心模块
+try:
+    from monitor import ProcessMonitor
+    from logger import CrashLogger  
+    from guardian import AppGuardian
+    from mqtt_publisher import MQTTPublisher
+except ImportError as e:
+    print(f"❌ 导入模块失败: {e}")
+    print("请确保所有必需的Python包已安装: pip install -r requirements.txt")
+    sys.exit(1)
+
+# 版本信息
+VERSION = "2.0.0"
+
+
+class ISGGuardian:
+    """iSG Guardian 主控制器类"""
+    
+    def __init__(self):
+        """初始化Guardian实例"""
+        # 设置工作目录
+        self.work_dir = Path(__file__).parent.absolute()
+        os.chdir(self.work_dir)
+        
+        # 创建必要目录
+        (self.work_dir / 'data' / 'crash_logs').mkdir(parents=True, exist_ok=True)
+        (self.work_dir / 'data' / 'exports').mkdir(parents=True, exist_ok=True)
+        
+        # 文件路径
+        self.pid_file = self.work_dir / 'data' / 'guardian.pid'
+        self.log_file = self.work_dir / 'data' / 'guardian.log'
+        self.config_file = self.work_dir / 'config.yaml'
+        
+        # 加载配置
+        self.config = self._load_config()
+        
+        # 初始化组件
+        self.monitor = ProcessMonitor(self.config)
+        self.logger = CrashLogger(self.config)
+        self.app_guardian = AppGuardian(self.config)
+        self.mqtt = MQTTPublisher(self.config) if self.config['mqtt']['enabled'] else None
+        self.running = False
+        
+    def _load_config(self) -> dict:
+        """加载配置文件
+        
+        Returns:
+            dict: 配置字典
+            
+        Raises:
+            SystemExit: 配置文件不存在或格式错误
+        """
+        try:
+            with open(self.config_file, 'r', encoding='utf-8') as f:
+                return yaml.safe_load(f)
+        except FileNotFoundError:
+            self._print_error(f"配置文件不存在: {self.config_file}")
+            print("请先运行: cp config.yaml.example config.yaml")
+            sys.exit(1)
+        except yaml.YAMLError as e:
+            self._print_error(f"配置文件格式错误: {e}")
+            sys.exit(1)
+    
+    def _check_dependencies(self) -> bool:
+        """检查系统依赖
+        
+        Returns:
+            bool: 依赖检查是否通过
+        """
+        missing_deps = []
+        
+        # 检查adb
+        if os.system("which adb > /dev/null 2>&1") != 0:
+            missing_deps.append("adb (安装: pkg install android-tools)")
+            
+        # 检查mosquitto_pub (如果启用MQTT)
+        if self.config['mqtt']['enabled']:
+            if os.system("which mosquitto_pub > /dev/null 2>&1") != 0:
+                missing_deps.append("mosquitto_pub (安装: pkg install mosquitto)")
+        
+        if missing_deps:
+            self._print_error("缺少系统依赖:")
+            for dep in missing_deps:
+                print(f"  ❌ {dep}")
+            return False
+            
+        # 检查Android设备连接
+        result = os.system("adb devices 2>/dev/null | grep -q device")
+        if result != 0:
+            self._print_error("没有检测到Android设备")
+            print("  请确保:")
+            print("  1. 设备已通过USB连接")
+            print("  2. 已启用开发者选项和USB调试")
+            print("  3. 已授权此计算机的调试访问")
+            return False
+            
+        return True
+    
+    def start_daemon(self) -> bool:
+        """启动守护服务
+        
+        Returns:
+            bool: 启动是否成功
+        """
+        # 检查是否已经在运行
+        if self._is_running():
+            pid = self._get_running_pid()
+            self._print_error(f"守护服务已在运行 (PID: {pid})")
+            return False
+            
+        # 检查依赖
+        print("🔧 检查系统依赖...")
+        if not self._check_dependencies():
+            return False
+        print("✅ 依赖检查完成")
+        
+        # 启动守护进程
+        print("🚀 启动 iSG App Guardian...")
+        
+        try:
+            # 后台运行
+            pid = os.fork()
+            if pid > 0:
+                # 父进程 - 等待子进程启动并保存PID
+                time.sleep(2)
+                if self._is_running():
+                    print(f"✅ 守护服务启动成功 (PID: {pid})")
+                    print(f"   📋 进程名称: iSG App Guardian")
+                    print(f"   📁 工作目录: {self.work_dir}")
+                    print(f"   📡 监控目标: {self.config['app']['package_name']}")
+                    print()
+                    print("📊 管理命令:")
+                    print("   查看状态: isg-guardian status")
+                    print("   查看日志: isg-guardian logs")
+                    print("   停止服务: isg-guardian stop")
+                    return True
+                else:
+                    self._print_error("守护服务启动失败，请查看日志")
+                    return False
+            else:
+                # 子进程 - 成为守护进程
+                self._daemonize()
+                
+        except OSError as e:
+            self._print_error(f"启动守护进程失败: {e}")
+            return False
+    
+    def _daemonize(self):
+        """守护进程化"""
+        # 脱离终端
+        os.setsid()
+        
+        # 重定向标准输入输出
+        with open('/dev/null', 'r') as f:
+            os.dup2(f.fileno(), sys.stdin.fileno())
+            
+        with open(self.log_file, 'a') as f:
+            os.dup2(f.fileno(), sys.stdout.fileno())
+            os.dup2(f.fileno(), sys.stderr.fileno())
+        
+        # 保存PID
+        with open(self.pid_file, 'w') as f:
+            f.write(str(os.getpid()))
+        
+        # 设置信号处理
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
+        
+        # 启动监控循环
+        try:
+            asyncio.run(self._run_guardian())
+        except Exception as e:
+            print(f"❌ 守护服务异常退出: {e}")
+        finally:
+            self._cleanup()
+    
+    async def _run_guardian(self):
+        """运行守护服务主循环"""
+        print(f"🚀 iSG App Guardian 启动 - {datetime.now()}")
+        
+        # 启动各组件
+        await self.logger.start()
+        await self.monitor.start()
+        await self.app_guardian.start()
+        
+        if self.mqtt:
+            await self.mqtt.setup_discovery()
+            
+        self.running = True
+        print("✅ 所有组件启动完成")
+        
+        # 主监控循环
+        try:
+            while self.running:
+                await self._monitor_cycle()
+                await asyncio.sleep(self.config['monitor']['check_interval'])
+        except Exception as e:
+            print(f"❌ 监控循环异常: {e}")
+        finally:
+            print("🛑 守护服务正在停止...")
+            
+    async def _monitor_cycle(self):
+        """单次监控周期"""
+        try:
+            # 检查应用状态
+            app_status = await self.monitor.check_app_status()
+            
+            # 记录状态日志
+            await self.logger.log_status(app_status)
+            
+            # 发布MQTT状态
+            if self.mqtt:
+                await self.mqtt.publish_status(app_status)
+                
+            # 处理异常状态
+            if app_status.crashed:
+                await self.app_guardian.handle_crash(app_status)
+                if self.mqtt:
+                    await self.mqtt.publish_crash_alert("crash_detected", "应用崩溃")
+            elif not app_status.running:
+                await self.app_guardian.start_app()
+                
+        except Exception as e:
+            print(f"❌ 监控周期异常: {e}")
+    
+    def stop_daemon(self) -> bool:
+        """停止守护服务
+        
+        Returns:
+            bool: 停止是否成功
+        """
+        if not self._is_running():
+            self._print_error("守护服务未在运行")
+            return False
+            
+        pid = self._get_running_pid()
+        print(f"🛑 正在停止守护服务 (PID: {pid})...")
+        
+        try:
+            # 发送TERM信号
+            os.kill(pid, signal.SIGTERM)
+            
+            # 等待进程退出
+            for i in range(30):  # 最多等待30秒
+                if not self._is_running():
+                    print("✅ 守护服务已停止")
+                    return True
+                time.sleep(1)
+                
+            # 强制杀死
+            print("⚡ 强制停止进程...")
+            os.kill(pid, signal.SIGKILL)
+            time.sleep(2)
+            
+            if not self._is_running():
+                print("✅ 守护服务已强制停止")
+                return True
+            else:
+                self._print_error("无法停止守护服务")
+                return False
+                
+        except ProcessLookupError:
+            # 进程已经不存在
+            self._cleanup()
+            print("✅ 守护服务已停止")
+            return True
+        except PermissionError:
+            self._print_error("权限不足，无法停止守护服务")
+            return False
+        except Exception as e:
+            self._print_error(f"停止守护服务时发生错误: {e}")
+            return False
+    
+    def restart_daemon(self) -> bool:
+        """重启守护服务
+        
+        Returns:
+            bool: 重启是否成功
+        """
+        print("🔄 重启守护服务...")
+        if self._is_running():
+            if not self.stop_daemon():
+                return False
+            time.sleep(2)
+        return self.start_daemon()
+    
+    def show_status(self) -> bool:
+        """显示运行状态
+        
+        Returns:
+            bool: 服务是否在运行
+        """
+        if self._is_running():
+            pid = self._get_running_pid()
+            
+            # 获取进程启动时间
+            try:
+                import psutil
+                process = psutil.Process(pid)
+                start_time = datetime.fromtimestamp(process.create_time())
+                uptime = datetime.now() - start_time
+                memory_mb = process.memory_info().rss / 1024 / 1024
+                
+                print("✅ iSG App Guardian 运行中")
+                print(f"   🆔 进程PID: {pid}")
+                print(f"   ⏱️  启动时间: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"   ⏰ 运行时长: {str(uptime).split('.')[0]}")
+                print(f"   💾 内存使用: {memory_mb:.1f} MB")
+                print(f"   📁 工作目录: {self.work_dir}")
+                print(f"   📡 监控目标: {self.config['app']['package_name']}")
+                
+            except ImportError:
+                print("✅ iSG App Guardian 运行中")
+                print(f"   🆔 进程PID: {pid}")
+                print(f"   📁 工作目录: {self.work_dir}")
+                print("   💡 安装psutil可查看更多信息: pip install psutil")
+            except Exception as e:
+                print("✅ iSG App Guardian 运行中")
+                print(f"   🆔 进程PID: {pid}")
+                print(f"   ⚠️  获取详细信息失败: {e}")
+                
+            # 显示最近状态
+            status_file = self.work_dir / 'data' / 'app_status.log'
+            if status_file.exists():
+                try:
+                    with open(status_file, 'r') as f:
+                        lines = f.readlines()
+                        if lines:
+                            print(f"   📊 最近状态: {lines[-1].strip()}")
+                except:
+                    pass
+        else:
+            print("❌ iSG App Guardian 未运行")
+            
+        return self._is_running()
+    
+    def show_logs(self):
+        """显示实时日志"""
+        if not self.log_file.exists():
+            self._print_error("日志文件不存在")
+            return
+            
+        print(f"📜 实时日志 ({self.log_file}):")
+        print("   按 Ctrl+C 退出")
+        print("-" * 50)
+        
+        try:
+            # 类似tail -f的功能
+            with open(self.log_file, 'r') as f:
+                # 先显示最后50行
+                lines = f.readlines()
+                for line in lines[-50:]:
+                    print(line.rstrip())
+                
+                # 然后实时跟踪新内容
+                while True:
+                    line = f.readline()
+                    if line:
+                        print(line.rstrip())
+                    else:
+                        time.sleep(0.1)
+                        
+        except KeyboardInterrupt:
+            print("\n📜 日志查看结束")
+        except Exception as e:
+            self._print_error(f"读取日志失败: {e}")
+    
+    def _is_running(self) -> bool:
+        """检查守护服务是否在运行
+        
+        Returns:
+            bool: 服务是否在运行
+        """
+        if not self.pid_file.exists():
+            return False
+            
+        try:
+            with open(self.pid_file, 'r') as f:
+                pid = int(f.read().strip())
+            
+            # 检查进程是否存在
+            os.kill(pid, 0)
+            return True
+            
+        except (ValueError, ProcessLookupError, FileNotFoundError):
+            # PID文件无效或进程不存在
+            self._cleanup()
+            return False
+    
+    def _get_running_pid(self) -> Optional[int]:
+        """获取运行中的进程PID
+        
+        Returns:
+            int: PID号，如果不存在返回None
+        """
+        try:
+            with open(self.pid_file, 'r') as f:
+                return int(f.read().strip())
+        except:
+            return None
+    
+    def _signal_handler(self, signum, frame):
+        """信号处理器
+        
+        Args:
+            signum: 信号号
+            frame: 当前栈帧
+        """
+        print(f"🛑 收到信号 {signum}，正在停止...")
+        self.running = False
+    
+    def _cleanup(self):
+        """清理资源"""
+        if self.pid_file.exists():
+            try:
+                self.pid_file.unlink()
+            except:
+                pass
+    
+    def _print_error(self, message: str):
+        """打印错误信息
+        
+        Args:
+            message: 错误信息
+        """
+        print(f"❌ 错误: {message}", file=sys.stderr)
+
+
+def main():
+    """主函数"""
+    parser = argparse.ArgumentParser(
+        description="iSG App Guardian - 轻量级应用监控守护服务",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+使用示例:
+  isg-guardian start      启动守护服务
+  isg-guardian stop       停止守护服务
+  isg-guardian restart    重启守护服务
+  isg-guardian status     查看运行状态
+  isg-guardian logs       查看实时日志
+  
+专为Termux环境设计，监控iSG Android应用的运行状态
+        """
+    )
+    
+    parser.add_argument(
+        'command',
+        choices=['start', 'stop', 'restart', 'status', 'logs'],
+        help='要执行的命令'
+    )
+    
+    parser.add_argument(
+        '-v', '--version',
+        action='version',
+        version=f'iSG App Guardian {VERSION}'
+    )
+    
+    # 如果没有参数，显示帮助
+    if len(sys.argv) == 1:
+        parser.print_help()
+        sys.exit(1)
+        
+    args = parser.parse_args()
+    
+    # 创建守护服务实例
+    try:
+        guardian = ISGGuardian()
+    except Exception as e:
+        print(f"❌ 初始化失败: {e}")
+        sys.exit(1)
+    
+    # 执行对应命令
+    if args.command == 'start':
+        success = guardian.start_daemon()
+        sys.exit(0 if success else 1)
+        
+    elif args.command == 'stop':
+        success = guardian.stop_daemon()
+        sys.exit(0 if success else 1)
+        
+    elif args.command == 'restart':
+        success = guardian.restart_daemon()
+        sys.exit(0 if success else 1)
+        
+    elif args.command == 'status':
+        is_running = guardian.show_status()
+        sys.exit(0 if is_running else 1)
+        
+    elif args.command == 'logs':
+        guardian.show_logs()
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
