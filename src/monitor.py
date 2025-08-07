@@ -26,6 +26,7 @@ class AppStatus:
         uptime: 运行时长（秒）
         memory_mb: 内存使用量（MB）
         timestamp: 状态检查时间戳
+        crash_type: 崩溃类型（'logcat_crash'或'force_stop'）
     """
     running: bool = False
     crashed: bool = False
@@ -33,6 +34,7 @@ class AppStatus:
     uptime: int = 0
     memory_mb: float = 0.0
     timestamp: datetime = datetime.now()
+    crash_type: Optional[str] = None
 
 
 class ProcessMonitor:
@@ -51,6 +53,7 @@ class ProcessMonitor:
         self.package_name = config['app']['package_name']
         self.last_pid = None
         self.start_time = None
+        self.last_seen_running = False
         
     async def start(self):
         """启动监控器"""
@@ -63,23 +66,42 @@ class ProcessMonitor:
             AppStatus: 应用当前状态
         """
         try:
-            # 使用adb检查进程
-            cmd = f"adb shell pgrep -f {self.package_name}"
+            # 使用pidof检查Android应用进程
+            cmd = f"adb shell pidof {self.package_name}"
             result = await self._run_command(cmd)
             
             if result.returncode == 0 and result.stdout.strip():
                 # 应用正在运行
-                pids = result.stdout.strip().split('\n')
+                pids = result.stdout.strip().split()
                 pid = int(pids[0]) if pids and pids[0].isdigit() else None
                 if pid:
+                    self.last_seen_running = True
                     return await self._get_running_status(pid)
                 else:
                     # 进程ID无效
                     return AppStatus(running=False, crashed=False)
             else:
-                # 应用未运行，检查是否崩溃
-                crashed = await self._check_recent_crash()
-                return AppStatus(running=False, crashed=crashed)
+                # 应用未运行，检查是否是意外停止
+                crashed = False
+                crash_type = None
+                
+                if self.last_seen_running:
+                    # 应用之前在运行，现在停止了，认为是崩溃/意外停止
+                    crashed = True
+                    crash_type = "force_stop"  # 默认认为是强制停止
+                    print(f"💥 检测到应用意外停止 (PID: {self.last_pid})")
+                    
+                    # 检查是否有真正的崩溃日志
+                    logcat_crash = await self._check_recent_crash()
+                    if logcat_crash:
+                        crash_type = "logcat_crash"
+                        
+                    # 重置状态
+                    self.last_pid = None
+                    self.start_time = None
+                    
+                self.last_seen_running = False
+                return AppStatus(running=False, crashed=crashed, crash_type=crash_type)
                 
         except Exception as e:
             print(f"❌ 检查应用状态失败: {e}")

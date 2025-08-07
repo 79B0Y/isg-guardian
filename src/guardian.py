@@ -45,15 +45,21 @@ class AppGuardian:
         Returns:
             bool: 是否成功处理崩溃
         """
-        print(f"💥 检测到应用崩溃 - PID: {status.pid}, 运行时长: {status.uptime}s")
+        print(f"💥 检测到应用异常 - PID: {status.pid}, 运行时长: {status.uptime}s")
         
         # 捕获崩溃日志
         try:
             from logger import CrashLogger
             logger = CrashLogger(self.config)
-            crash_file = await logger.capture_crash_logs(status)
+            
+            # 根据状态决定使用哪种日志捕获方法
+            if hasattr(status, 'crash_type') and status.crash_type == 'force_stop':
+                crash_file = await logger.capture_force_stop_event(status)
+            else:
+                crash_file = await logger.capture_crash_logs(status)
+                
             if crash_file:
-                print(f"📝 崩溃日志已保存: {Path(crash_file).name}")
+                print(f"📝 事件日志已保存: {Path(crash_file).name}")
         except ImportError as e:
             print(f"⚠️ 无法导入日志模块: {e}")
         

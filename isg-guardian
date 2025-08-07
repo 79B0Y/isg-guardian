@@ -51,6 +51,8 @@ try:
     from logger import CrashLogger  
     from guardian import AppGuardian
     from mqtt_publisher import MQTTPublisher
+    from mqtt_subscriber import MQTTSubscriber
+    from adb_manager import ADBManager
 except ImportError as e:
     print(f"❌ 导入模块失败: {e}")
     print("请确保所有必需的Python包已安装: pip install -r requirements.txt")
@@ -87,6 +89,8 @@ class ISGGuardian:
         self.logger = CrashLogger(self.config)
         self.app_guardian = AppGuardian(self.config)
         self.mqtt = MQTTPublisher(self.config) if self.config['mqtt']['enabled'] else None
+        self.mqtt_subscriber = MQTTSubscriber(self.config) if self.config['mqtt']['enabled'] else None
+        self.adb_manager = ADBManager(self.config)
         self.running = False
         
     def _load_config(self) -> dict:
@@ -132,15 +136,21 @@ class ISGGuardian:
                 print(f"  ❌ {dep}")
             return False
             
-        # 检查Android设备连接
-        result = os.system("adb devices 2>/dev/null | grep -q device")
+        # 检查ADB是否可以运行（不强制要求设备已连接，因为ADB manager会建立连接）
+        result = os.system("adb version >/dev/null 2>&1")
         if result != 0:
-            self._print_error("没有检测到Android设备")
-            print("  请确保:")
-            print("  1. 设备已通过USB连接")
-            print("  2. 已启用开发者选项和USB调试")
-            print("  3. 已授权此计算机的调试访问")
+            self._print_error("ADB工具不可用")
+            print("  请确保ADB已正确安装")
             return False
+        
+        # 如果启用了自动连接，则ADB manager会负责建立连接
+        # 如果未启用自动连接，则检查是否有设备连接
+        if not self.config.get('adb', {}).get('auto_connect', True):
+            result = os.system("adb devices 2>/dev/null | grep -q device")
+            if result != 0:
+                self._print_error("ADB自动连接已禁用且没有检测到Android设备")
+                print("  请确保设备已连接或启用ADB自动连接")
+                return False
             
         return True
     
@@ -230,9 +240,15 @@ class ISGGuardian:
         await self.logger.start()
         await self.monitor.start()
         await self.app_guardian.start()
+        await self.adb_manager.start()
         
         if self.mqtt:
             await self.mqtt.setup_discovery()
+            
+        # 启动MQTT订阅器并设置重启回调
+        if self.mqtt_subscriber:
+            self.mqtt_subscriber.set_restart_callback(self.app_guardian.restart_app)
+            await self.mqtt_subscriber.start()
             
         self.running = True
         print("✅ 所有组件启动完成")
@@ -246,10 +262,33 @@ class ISGGuardian:
             print(f"❌ 监控循环异常: {e}")
         finally:
             print("🛑 守护服务正在停止...")
+            # 停止MQTT订阅器
+            if self.mqtt_subscriber:
+                await self.mqtt_subscriber.stop()
+            # 清理ADB连接
+            if hasattr(self, 'adb_manager'):
+                await self.adb_manager.disconnect()
+            # 发布离线状态
+            if self.mqtt:
+                await self.mqtt.publish_guardian_offline()
             
     async def _monitor_cycle(self):
         """单次监控周期"""
         try:
+            # 确保ADB连接正常
+            adb_connected = await self.adb_manager.ensure_connection()
+            
+            # 检查ADB连接状态并发布到MQTT
+            if self.mqtt:
+                adb_status = await self.adb_manager.check_connection_status()
+                await self.mqtt.publish_adb_status(adb_status)
+                
+                # 如果连接正常，获取并发布设备信息
+                if adb_connected:
+                    device_info = await self.adb_manager.get_device_info()
+                    if device_info:
+                        await self.mqtt.publish_device_info(device_info)
+            
             # 检查应用状态
             app_status = await self.monitor.check_app_status()
             
@@ -356,6 +395,11 @@ class ISGGuardian:
                 print(f"   💾 内存使用: {memory_mb:.1f} MB")
                 print(f"   📁 工作目录: {self.work_dir}")
                 print(f"   📡 监控目标: {self.config['app']['package_name']}")
+                
+                # 显示ADB连接状态
+                if self.config.get('adb', {}).get('auto_connect', True):
+                    adb_target = f"{self.config.get('adb', {}).get('host', '127.0.0.1')}:{self.config.get('adb', {}).get('port', 5555)}"
+                    print(f"   🔌 ADB目标: {adb_target}")
                 
             except ImportError:
                 print("✅ iSG App Guardian 运行中")

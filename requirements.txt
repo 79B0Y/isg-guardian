@@ -9,3 +9,6 @@ aiofiles>=0.8.0
 
 # Process title management
 setproctitle>=1.3.0
+
+# Android UI automation and ADB utilities
+uiautomator2>=3.4.0

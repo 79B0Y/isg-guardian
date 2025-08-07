@@ -116,6 +116,27 @@ class MQTTPublisher:
             "device": device_info
         }
         
+        # ADB连接状态传感器
+        adb_connection_config = {
+            "name": "iSG ADB Connection",
+            "device_class": "connectivity",
+            "state_topic": f"{self.topic_prefix}/{self.device_id}/adb_connection/state",
+            "unique_id": f"{self.device_id}_adb_connection",
+            "icon": "mdi:usb",
+            "payload_on": "connected",
+            "payload_off": "disconnected",
+            "device": device_info
+        }
+        
+        # 设备信息传感器
+        device_info_config = {
+            "name": "iSG Device Info",
+            "state_topic": f"{self.topic_prefix}/{self.device_id}/device_info/state",
+            "unique_id": f"{self.device_id}_device_info",
+            "icon": "mdi:information",
+            "device": device_info
+        }
+        
         # 发布所有发现配置
         configs = [
             ("binary_sensor", "app_running", app_status_config),
@@ -123,7 +144,9 @@ class MQTTPublisher:
             ("sensor", "uptime", uptime_config),
             ("sensor", "memory", memory_config),
             ("button", "restart", restart_button_config),
-            ("sensor", "guardian_status", guardian_status_config)
+            ("sensor", "guardian_status", guardian_status_config),
+            ("binary_sensor", "adb_connection", adb_connection_config),
+            ("sensor", "device_info", device_info_config)
         ]
         
         success_count = 0
@@ -184,6 +207,49 @@ class MQTTPublisher:
             
         except Exception as e:
             print(f"❌ 发布崩溃告警失败: {e}")
+            
+    async def publish_adb_status(self, connection_status: dict):
+        """发布ADB连接状态
+        
+        Args:
+            connection_status: ADB连接状态信息
+        """
+        try:
+            # 发布连接状态
+            is_connected = connection_status.get('connected', False)
+            await self._publish("adb_connection/state", "connected" if is_connected else "disconnected")
+            
+            # 发布设备信息
+            if is_connected and connection_status.get('devices'):
+                device_info = {
+                    "timestamp": datetime.now().isoformat(),
+                    "target_device": connection_status.get('target_device', ''),
+                    "device_count": connection_status.get('device_count', 0),
+                    "devices": connection_status.get('devices', [])
+                }
+                await self._publish("device_info/state", json.dumps(device_info))
+            
+        except Exception as e:
+            # 静默处理MQTT错误
+            pass
+            
+    async def publish_device_info(self, device_info: dict):
+        """发布设备详细信息
+        
+        Args:
+            device_info: 设备信息字典
+        """
+        try:
+            if device_info:
+                info_data = {
+                    "timestamp": datetime.now().isoformat(),
+                    **device_info
+                }
+                await self._publish("device_info/state", json.dumps(info_data))
+                
+        except Exception as e:
+            # 静默处理MQTT错误
+            pass
             
     async def publish_guardian_offline(self):
         """发布守护进程离线状态"""

@@ -102,6 +102,74 @@ class CrashLogger:
         except Exception as e:
             print(f"❌ 捕获崩溃日志失败: {e}")
             return ""
+            
+    async def capture_force_stop_event(self, status) -> str:
+        """捕获强制停止事件
+        
+        Args:
+            status: 停止时的应用状态
+            
+        Returns:
+            str: 事件日志文件路径
+        """
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        crash_file = self.crash_log_dir / f"crash_{timestamp}.log"
+        
+        print(f"📝 记录应用停止事件: {crash_file.name}")
+        
+        try:
+            # 构建停止事件报告
+            event_report = {
+                "timestamp": datetime.now().isoformat(),
+                "package_name": self.config['app']['package_name'],
+                "crash_type": "force_stop",
+                "uptime_before_stop": status.uptime if hasattr(status, 'uptime') else 0,
+                "memory_usage": status.memory_mb if hasattr(status, 'memory_mb') else 0.0,
+                "pid": status.pid if hasattr(status, 'pid') else None,
+                "description": "应用被强制停止或意外终止"
+            }
+            
+            # 尝试获取一些相关日志
+            recent_logs = await self._get_recent_system_logs()
+            if recent_logs:
+                event_report["system_logs"] = recent_logs[-50:]  # 保留最后50行
+                
+            # 保存到文件
+            await self._write_json_file(crash_file, event_report)
+            
+            # 清理旧日志
+            await self._cleanup_old_logs()
+            
+            return str(crash_file)
+            
+        except Exception as e:
+            print(f"❌ 记录停止事件失败: {e}")
+            return ""
+            
+    async def _get_recent_system_logs(self) -> List[str]:
+        """获取最近的系统日志
+        
+        Returns:
+            List[str]: 系统日志行列表
+        """
+        try:
+            # 获取最近2分钟的系统相关日志
+            cmd = "adb shell logcat -d -t 120 | grep -E '(ActivityManager|System)'"
+            process = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await process.communicate()
+            
+            if process.returncode == 0:
+                return stdout.decode('utf-8', errors='ignore').strip().split('\n')
+            else:
+                return []
+                
+        except Exception as e:
+            print(f"❌ 获取系统日志失败: {e}")
+            return []
         
     async def _get_crash_logcat(self) -> List[str]:
         """获取崩溃相关的logcat日志
