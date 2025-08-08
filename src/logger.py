@@ -202,18 +202,11 @@ class CrashLogger:
             adb_prefix = self._get_adb_prefix()
             all_logs = []
             
-            # 方法1: 获取应用特定日志
-            cmd1 = f"{adb_prefix} shell logcat -d -t 600 | grep {package_name}"
-            process1 = await asyncio.create_subprocess_shell(
-                cmd1,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout1, _ = await process1.communicate()
-            
-            if stdout1:
-                lines1 = stdout1.decode('utf-8', errors='ignore').strip().split('\n')
-                all_logs.extend([f"[APP] {line}" for line in lines1 if line.strip()])
+            # 优先使用--pid方法获取iSG进程的错误日志
+            isg_error_logs = await self._get_isg_error_logs()
+            if isg_error_logs:
+                all_logs.extend(isg_error_logs)
+                print(f"📋 获取到 {len(isg_error_logs)} 行iSG错误日志")
             
             # 方法2: 获取ActivityManager相关日志（应用启动/停止/崩溃）
             cmd2 = f"{adb_prefix} shell logcat -d -t 600 | grep -E 'ActivityManager.*{package_name}'"
@@ -226,10 +219,13 @@ class CrashLogger:
             
             if stdout2:
                 lines2 = stdout2.decode('utf-8', errors='ignore').strip().split('\n')
-                all_logs.extend([f"[AM] {line}" for line in lines2 if line.strip()])
+                am_logs = [f"[AM] {line}" for line in lines2 if line.strip()]
+                all_logs.extend(am_logs)
+                if am_logs:
+                    print(f"📋 获取到 {len(am_logs)} 行ActivityManager日志")
             
-            # 方法3: 获取系统服务相关日志
-            cmd3 = f"{adb_prefix} shell logcat -d -t 300 | grep -E '(FATAL|CRASH|ANR|force.stop|am_proc)'"
+            # 方法3: 获取系统级别的崩溃相关日志
+            cmd3 = f"{adb_prefix} shell logcat -d -t 300 | grep -E '(FATAL|CRASH|ANR).*{package_name}'"
             process3 = await asyncio.create_subprocess_shell(
                 cmd3,
                 stdout=asyncio.subprocess.PIPE,
@@ -239,14 +235,14 @@ class CrashLogger:
             
             if stdout3:
                 lines3 = stdout3.decode('utf-8', errors='ignore').strip().split('\n')
-                # 只保留包含包名或与应用相关的系统日志
-                for line in lines3:
-                    if line.strip() and (package_name in line or any(keyword in line.upper() for keyword in ['FORCE', 'STOP', 'KILL'])):
-                        all_logs.append(f"[SYS] {line}")
+                sys_logs = [f"[SYS] {line}" for line in lines3 if line.strip()]
+                all_logs.extend(sys_logs)
+                if sys_logs:
+                    print(f"📋 获取到 {len(sys_logs)} 行系统崩溃日志")
             
             # 如果获取到日志，按时间排序并添加调试信息
             if all_logs:
-                print(f"📋 获取到 {len(all_logs)} 行相关日志")
+                print(f"📋 总共获取到 {len(all_logs)} 行相关日志")
                 return all_logs
             else:
                 # 没有获取到日志时，尝试获取基本的logcat输出以验证ADB连接
@@ -270,6 +266,66 @@ class CrashLogger:
         except Exception as e:
             print(f"❌ 获取崩溃日志失败: {e}")
             return [f"[ERROR] logcat获取异常: {str(e)}"]
+            
+    async def _get_isg_error_logs(self) -> List[str]:
+        """使用--pid参数获取iSG进程的错误日志
+        
+        Returns:
+            List[str]: iSG进程错误日志列表
+        """
+        try:
+            package_name = self.config['app']['package_name']
+            adb_prefix = self._get_adb_prefix()
+            
+            # 首先获取iSG进程的PID
+            pidof_cmd = f"{adb_prefix} shell pidof {package_name}"
+            pid_process = await asyncio.create_subprocess_shell(
+                pidof_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            pid_stdout, _ = await pid_process.communicate()
+            
+            if pid_process.returncode != 0 or not pid_stdout.strip():
+                print("⚠️ iSG进程未运行，无法获取--pid日志")
+                return []
+            
+            pid = pid_stdout.decode('utf-8', errors='ignore').strip().split()[0]
+            if not pid.isdigit():
+                print(f"⚠️ 获取到无效PID: {pid}")
+                return []
+                
+            print(f"📱 iSG进程PID: {pid}")
+            
+            # 使用--pid参数获取该进程的错误日志
+            logcat_cmd = f"{adb_prefix} shell logcat --pid={pid} -d -v time '*:E'"
+            print(f"🔧 执行命令: {logcat_cmd}")
+            
+            logcat_process = await asyncio.create_subprocess_shell(
+                logcat_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            logcat_stdout, logcat_stderr = await logcat_process.communicate()
+            
+            if logcat_process.returncode != 0:
+                error_msg = logcat_stderr.decode('utf-8', errors='ignore').strip()
+                print(f"❌ logcat --pid命令失败: {error_msg}")
+                return []
+            
+            if logcat_stdout:
+                lines = logcat_stdout.decode('utf-8', errors='ignore').strip().split('\n')
+                error_logs = [f"[PID-ERROR] {line}" for line in lines if line.strip()]
+                if error_logs:
+                    print(f"✅ 通过--pid获取到 {len(error_logs)} 行错误日志")
+                return error_logs
+            else:
+                print("ℹ️ iSG进程当前没有错误日志")
+                return [f"[PID-INFO] iSG进程 (PID:{pid}) 当前没有错误日志"]
+                
+        except Exception as e:
+            print(f"❌ 获取iSG进程错误日志失败: {e}")
+            return [f"[PID-ERROR] 获取进程日志异常: {str(e)}"]
             
     def _detect_crash_type(self, logs: List[str]) -> str:
         """检测崩溃类型
