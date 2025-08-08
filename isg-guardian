@@ -459,6 +459,35 @@ class ISGGuardian:
         except Exception as e:
             self._print_error(f"读取日志失败: {e}")
     
+    async def restart_isg_app(self):
+        """直接重启iSG应用（调试用）
+        
+        Returns:
+            bool: 重启是否成功
+        """
+        print("🔧 调试模式：直接重启iSG应用")
+        
+        try:
+            # 初始化必要的组件
+            await self.adb_manager.start()
+            print(f"🎯 目标应用: {self.config['app']['package_name']}")
+            print(f"🎯 启动Activity: {self.config['app']['activity_name']}")
+            
+            # 执行重启
+            print("🔄 开始执行重启...")
+            success = await self.app_guardian.restart_app()
+            
+            if success:
+                print("✅ iSG应用重启成功")
+                return True
+            else:
+                print("❌ iSG应用重启失败")
+                return False
+                
+        except Exception as e:
+            print(f"❌ 重启过程异常: {e}")
+            return False
+    
     def _is_running(self) -> bool:
         """检查守护服务是否在运行
         
@@ -527,11 +556,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
-  isg-guardian start      启动守护服务
-  isg-guardian stop       停止守护服务
-  isg-guardian restart    重启守护服务
-  isg-guardian status     查看运行状态
-  isg-guardian logs       查看实时日志
+  isg-guardian start       启动守护服务
+  isg-guardian stop        停止守护服务
+  isg-guardian restart     重启守护服务
+  isg-guardian status      查看运行状态
+  isg-guardian logs        查看实时日志
+  isg-guardian restart-isg 直接重启iSG应用(调试用)
   
 专为Termux环境设计，监控iSG Android应用的运行状态
         """
@@ -539,7 +569,7 @@ def main():
     
     parser.add_argument(
         'command',
-        choices=['start', 'stop', 'restart', 'status', 'logs'],
+        choices=['start', 'stop', 'restart', 'status', 'logs', 'restart-isg'],
         help='要执行的命令'
     )
     
@@ -583,6 +613,11 @@ def main():
     elif args.command == 'logs':
         guardian.show_logs()
         sys.exit(0)
+        
+    elif args.command == 'restart-isg':
+        print("🔧 调试命令：直接重启iSG应用")
+        success = asyncio.run(guardian.restart_isg_app())
+        sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":

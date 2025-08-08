@@ -283,13 +283,14 @@ class ADBManager:
             dict: 设备信息
         """
         try:
-            # 获取设备属性
+            # 获取设备属性，使用设备指定
+            adb_prefix = self.get_adb_prefix()
             commands = {
-                'model': 'adb shell getprop ro.product.model',
-                'brand': 'adb shell getprop ro.product.brand',
-                'version': 'adb shell getprop ro.build.version.release',
-                'sdk': 'adb shell getprop ro.build.version.sdk',
-                'serial': 'adb shell getprop ro.serialno'
+                'model': f'{adb_prefix} shell getprop ro.product.model',
+                'brand': f'{adb_prefix} shell getprop ro.product.brand',
+                'version': f'{adb_prefix} shell getprop ro.build.version.release',
+                'sdk': f'{adb_prefix} shell getprop ro.build.version.sdk',
+                'serial': f'{adb_prefix} shell getprop ro.serialno'
             }
             
             device_info = {}
@@ -305,13 +306,29 @@ class ADBManager:
                     
                     if process.returncode == 0:
                         value = stdout.decode('utf-8', errors='ignore').strip()
-                        device_info[key] = value if value else 'Unknown'
+                        if value:
+                            device_info[key] = value
+                            print(f"📱 {key}: {value}")
+                        else:
+                            device_info[key] = 'Unknown'
+                            print(f"⚠️ {key}: 空值")
                     else:
+                        error_msg = stderr.decode('utf-8', errors='ignore').strip()
                         device_info[key] = 'Unknown'
+                        print(f"❌ {key} 获取失败: {error_msg}")
                         
-                except:
+                except Exception as e:
                     device_info[key] = 'Unknown'
+                    print(f"❌ {key} 执行异常: {e}")
                     
+            # 添加诊断信息
+            if all(value == 'Unknown' for value in device_info.values()):
+                print(f"⚠️ 所有设备信息都为Unknown，可能是ADB连接问题")
+                print(f"   目标设备: {self.target_device}")
+                print(f"   使用的ADB前缀: {adb_prefix}")
+            else:
+                print(f"✅ 成功获取部分设备信息")
+                
             return device_info
             
         except Exception as e:
