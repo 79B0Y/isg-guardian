@@ -1,0 +1,80 @@
+🔧 检查系统依赖...
+✅ 依赖检查完成
+🚀 启动 iSG App Guardian...
+🚀 iSG App Guardian 启动 - 2025-08-11 12:01:39.717089
+📝 日志收集器启动 - 目录: data/crash_logs
+👀 开始监控应用: com.linknlink.app.device.isg
+🛡️ 应用守护器启动
+🔌 ADB连接管理器启动
+🔌 正在建立ADB连接到 127.0.0.1:5555
+🔧 执行ADB设置命令...
+🔧 执行: setprop service.adb.tcp.port 5555
+⚠️ 命令警告: /bin/sh: setprop: command not found
+🔧 执行: stop adbd
+⚠️ 命令警告: /bin/sh: stop: command not found
+🔧 执行: start adbd
+⚠️ 命令警告: /bin/sh: start: command not found
+🔄 连接尝试 1/3
+🔌 ADB连接输出: failed to connect to '127.0.0.1:5555': Connection refused
+⏳ 等待 5 秒后重试...
+🔄 连接尝试 2/3
+🔌 ADB连接输出: failed to connect to '127.0.0.1:5555': Connection refused
+⏳ 等待 5 秒后重试...
+🔄 连接尝试 3/3
+🔌 ADB连接输出: failed to connect to '127.0.0.1:5555': Connection refused
+❌ ADB连接建立失败
+⚠️ ADB连接建立失败，将在监控过程中重试
+📡 配置 Home Assistant 自动发现...
+❌ MQTT发布失败 [homeassistant/binary_sensor/isg_guardian_app_running/config]: Error: Connection refused
+❌ MQTT发布失败 [homeassistant/sensor/isg_guardian_crashes_today/config]: Error: Connection refused
+❌ MQTT发布失败 [homeassistant/sensor/isg_guardian_uptime/config]: Error: Connection refused
+❌ MQTT发布失败 [homeassistant/sensor/isg_guardian_memory/config]: Error: Connection refused
+❌ MQTT发布失败 [homeassistant/button/isg_guardian_restart/config]: Error: Connection refused
+❌ MQTT发布失败 [homeassistant/sensor/isg_guardian_guardian_status/config]: Error: Connection refused
+❌ MQTT发布失败 [homeassistant/binary_sensor/isg_guardian_adb_connection/config]: Error: Connection refused
+❌ MQTT发布失败 [homeassistant/sensor/isg_guardian_device_info/config]: Error: Connection refused
+✅ Home Assistant 实体注册完成 (0/8)
+❌ MQTT发布失败 [isg/isg_guardian/guardian_status/state]: Error: Connection refused
+📡 启动MQTT命令订阅器...
+🔧 调试信息：
+   MQTT Broker: localhost:1883
+   认证: 否
+   订阅主题: isg/isg_guardian/restart/set
+📡 订阅MQTT主题: isg/isg_guardian/restart/set
+🔧 mosquitto_sub命令: mosquitto_sub -h localhost -p 1883 -t isg/isg_guardian/restart/set
+✅ MQTT订阅进程已启动
+✅ 所有组件启动完成
+🔍 开始监听MQTT消息...
+🔄 检测到ADB连接断开，正在重新连接...
+🔌 正在建立ADB连接到 127.0.0.1:5555
+🔧 执行ADB设置命令...
+🔧 执行: setprop service.adb.tcp.port 5555
+⚠️ 命令警告: /bin/sh: setprop: command not found
+🔍 MQTT消息流结束
+🔧 执行: stop adbd
+⚠️ 命令警告: /bin/sh: stop: command not found
+🔧 执行: start adbd
+⚠️ 命令警告: /bin/sh: start: command not found
+🔄 连接尝试 1/3
+🔌 ADB连接输出: failed to connect to '127.0.0.1:5555': Connection refused
+⏳ 等待 5 秒后重试...
+🔄 连接尝试 2/3
+🔌 ADB连接输出: failed to connect to '127.0.0.1:5555': Connection refused
+⏳ 等待 5 秒后重试...
+🔄 连接尝试 3/3
+🔌 ADB连接输出: failed to connect to '127.0.0.1:5555': Connection refused
+❌ ADB连接建立失败
+❌ MQTT发布失败 [isg/isg_guardian/adb_connection/state]: Error: Connection refused
+❌ MQTT发布失败 [isg/isg_guardian/app_status/state]: Error: Connection refused
+❌ MQTT发布失败 [isg/isg_guardian/crashes_today/state]: Error: Connection refused
+❌ MQTT发布失败 [isg/isg_guardian/uptime/state]: Error: Connection refused
+❌ MQTT发布失败 [isg/isg_guardian/memory/state]: Error: Connection refused
+❌ MQTT发布失败 [isg/isg_guardian/guardian_status/state]: Error: Connection refused
+🚀 启动 iSG 应用...
+🛑 应用已强制停止
+❌ 应用启动失败: adb: device '127.0.0.1:5555' not found
+🛑 收到信号 15，正在停止...
+🛑 守护服务正在停止...
+📡 MQTT订阅器已停止
+❌ MQTT发布失败 [isg/isg_guardian/guardian_status/state]: Error: Connection refused
+❌ MQTT发布失败 [isg/isg_guardian/app_status/state]: Error: Connection refused

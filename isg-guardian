@@ -45,18 +45,21 @@ script_path = os.path.realpath(__file__)
 script_dir = os.path.dirname(script_path)
 sys.path.insert(0, os.path.join(script_dir, 'src'))
 
-# 导入核心模块
-try:
-    from monitor import ProcessMonitor
-    from logger import CrashLogger  
-    from guardian import AppGuardian
-    from mqtt_publisher import MQTTPublisher
-    from mqtt_subscriber import MQTTSubscriber
-    from adb_manager import ADBManager
-except ImportError as e:
-    print(f"❌ 导入模块失败: {e}")
-    print("请确保所有必需的Python包已安装: pip install -r requirements.txt")
-    sys.exit(1)
+# 延迟导入核心模块，避免在fork之前创建线程
+def _import_modules():
+    """延迟导入模块，避免在fork之前初始化asyncio"""
+    try:
+        from monitor import ProcessMonitor
+        from logger import CrashLogger  
+        from guardian import AppGuardian
+        from mqtt_publisher import MQTTPublisher
+        from mqtt_subscriber import MQTTSubscriber
+        from adb_manager import ADBManager
+        return ProcessMonitor, CrashLogger, AppGuardian, MQTTPublisher, MQTTSubscriber, ADBManager
+    except ImportError as e:
+        print(f"❌ 导入模块失败: {e}")
+        print("请确保所有必需的Python包已安装: pip install -r requirements.txt")
+        sys.exit(1)
 
 # 版本信息
 VERSION = "2.0.0"
@@ -84,6 +87,19 @@ class ISGGuardian:
         # 加载配置
         self.config = self._load_config()
         
+        # 延迟初始化组件(在fork之后)
+        self.adb_manager = None
+        self.monitor = None
+        self.logger = None
+        self.app_guardian = None
+        self.mqtt = None
+        self.mqtt_subscriber = None
+        self.running = False
+        
+    def _init_components(self):
+        """在fork之后初始化所有组件"""
+        ProcessMonitor, CrashLogger, AppGuardian, MQTTPublisher, MQTTSubscriber, ADBManager = _import_modules()
+        
         # 初始化ADB管理器
         self.adb_manager = ADBManager(self.config)
         
@@ -93,7 +109,6 @@ class ISGGuardian:
         self.app_guardian = AppGuardian(self.config, self.adb_manager)
         self.mqtt = MQTTPublisher(self.config) if self.config['mqtt']['enabled'] else None
         self.mqtt_subscriber = MQTTSubscriber(self.config) if self.config['mqtt']['enabled'] else None
-        self.running = False
         
     def _load_config(self) -> dict:
         """加载配置文件
@@ -178,28 +193,33 @@ class ISGGuardian:
         print("🚀 启动 iSG App Guardian...")
         
         try:
-            # 后台运行
-            pid = os.fork()
-            if pid > 0:
-                # 父进程 - 等待子进程启动并保存PID
-                time.sleep(2)
-                if self._is_running():
-                    print(f"✅ 守护服务启动成功 (PID: {pid})")
-                    print(f"   📋 进程名称: iSG App Guardian")
-                    print(f"   📁 工作目录: {self.work_dir}")
-                    print(f"   📡 监控目标: {self.config['app']['package_name']}")
-                    print()
-                    print("📊 管理命令:")
-                    print("   查看状态: isg-guardian status")
-                    print("   查看日志: isg-guardian logs")
-                    print("   停止服务: isg-guardian stop")
-                    return True
+            # 抑制fork的多线程警告，在守护进程场景下是安全的
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*multi-threaded.*fork.*")
+                
+                # 后台运行
+                pid = os.fork()
+                if pid > 0:
+                    # 父进程 - 等待子进程启动并保存PID
+                    time.sleep(2)
+                    if self._is_running():
+                        print(f"✅ 守护服务启动成功 (PID: {pid})")
+                        print(f"   📋 进程名称: iSG App Guardian")
+                        print(f"   📁 工作目录: {self.work_dir}")
+                        print(f"   📡 监控目标: {self.config['app']['package_name']}")
+                        print()
+                        print("📊 管理命令:")
+                        print("   查看状态: isg-guardian status")
+                        print("   查看日志: isg-guardian logs")
+                        print("   停止服务: isg-guardian stop")
+                        return True
+                    else:
+                        self._print_error("守护服务启动失败，请查看日志")
+                        return False
                 else:
-                    self._print_error("守护服务启动失败，请查看日志")
-                    return False
-            else:
-                # 子进程 - 成为守护进程
-                self._daemonize()
+                    # 子进程 - 成为守护进程
+                    self._daemonize()
                 
         except OSError as e:
             self._print_error(f"启动守护进程失败: {e}")
@@ -225,6 +245,9 @@ class ISGGuardian:
         # 设置信号处理
         signal.signal(signal.SIGTERM, self._signal_handler)
         signal.signal(signal.SIGINT, self._signal_handler)
+        
+        # 在fork之后初始化组件，避免多线程问题
+        self._init_components()
         
         # 启动监控循环
         try:
@@ -468,6 +491,10 @@ class ISGGuardian:
         print("🔧 调试模式：直接重启iSG应用")
         
         try:
+            # 确保组件已初始化
+            if self.adb_manager is None:
+                self._init_components()
+                
             # 初始化必要的组件
             await self.adb_manager.start()
             print(f"🎯 目标应用: {self.config['app']['package_name']}")
