@@ -6,7 +6,8 @@ iSG App Guardian - 轻量级应用监控守护服务
 监控应用进程状态、检测崩溃、记录日志并自动重启应用
 
 使用方法:
-    isg-guardian start      # 启动守护服务
+    isg-guardian start      # 启动守护服务（前台模式）
+    isg-guardian start -d   # 启动守护服务（后台模式）
     isg-guardian stop       # 停止守护服务  
     isg-guardian restart    # 重启守护服务
     isg-guardian status     # 查看运行状态
@@ -171,8 +172,11 @@ class ISGGuardian:
             
         return True
     
-    def start_daemon(self) -> bool:
+    def start_daemon(self, foreground: bool = True) -> bool:
         """启动守护服务
+        
+        Args:
+            foreground: 是否前台运行，默认为True
         
         Returns:
             bool: 启动是否成功
@@ -190,37 +194,61 @@ class ISGGuardian:
         print("✅ 依赖检查完成")
         
         # 启动守护进程
-        print("🚀 启动 iSG App Guardian...")
+        if foreground:
+            print("🚀 启动 iSG App Guardian (前台模式)...")
+        else:
+            print("🚀 启动 iSG App Guardian (后台模式)...")
         
         try:
-            # 抑制fork的多线程警告，在守护进程场景下是安全的
-            import warnings
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*multi-threaded.*fork.*")
+            if foreground:
+                # 前台运行模式
+                print(f"   📋 进程名称: iSG App Guardian")
+                print(f"   📁 工作目录: {self.work_dir}")
+                print(f"   📡 监控目标: {self.config['app']['package_name']}")
+                print()
+                print("💡 提示：按 Ctrl+C 可停止服务")
+                print("-" * 50)
                 
-                # 后台运行
-                pid = os.fork()
-                if pid > 0:
-                    # 父进程 - 等待子进程启动并保存PID
-                    time.sleep(2)
-                    if self._is_running():
-                        print(f"✅ 守护服务启动成功 (PID: {pid})")
-                        print(f"   📋 进程名称: iSG App Guardian")
-                        print(f"   📁 工作目录: {self.work_dir}")
-                        print(f"   📡 监控目标: {self.config['app']['package_name']}")
-                        print()
-                        print("📊 管理命令:")
-                        print("   查看状态: isg-guardian status")
-                        print("   查看日志: isg-guardian logs")
-                        print("   停止服务: isg-guardian stop")
-                        return True
+                # 设置信号处理
+                signal.signal(signal.SIGTERM, self._signal_handler)
+                signal.signal(signal.SIGINT, self._signal_handler)
+                
+                # 在前台直接初始化并运行
+                self._init_components()
+                asyncio.run(self._run_guardian())
+                return True
+            else:
+                # 后台运行模式（原始的守护进程逻辑）
+                # 抑制fork的多线程警告，在守护进程场景下是安全的
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*multi-threaded.*fork.*")
+                    
+                    pid = os.fork()
+                    if pid > 0:
+                        # 父进程 - 等待子进程启动并保存PID
+                        time.sleep(2)
+                        if self._is_running():
+                            print(f"✅ 守护服务启动成功 (PID: {pid})")
+                            print(f"   📋 进程名称: iSG App Guardian")
+                            print(f"   📁 工作目录: {self.work_dir}")
+                            print(f"   📡 监控目标: {self.config['app']['package_name']}")
+                            print()
+                            print("📊 管理命令:")
+                            print("   查看状态: isg-guardian status")
+                            print("   查看日志: isg-guardian logs")
+                            print("   停止服务: isg-guardian stop")
+                            return True
+                        else:
+                            self._print_error("守护服务启动失败，请查看日志")
+                            return False
                     else:
-                        self._print_error("守护服务启动失败，请查看日志")
-                        return False
-                else:
-                    # 子进程 - 成为守护进程
-                    self._daemonize()
+                        # 子进程 - 成为守护进程
+                        self._daemonize()
                 
+        except KeyboardInterrupt:
+            print("\n🛑 收到停止信号，正在退出...")
+            return True
         except OSError as e:
             self._print_error(f"启动守护进程失败: {e}")
             return False
@@ -583,7 +611,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
-  isg-guardian start       启动守护服务
+  isg-guardian start       启动守护服务（前台模式）
+  isg-guardian start -d    启动守护服务（后台模式）
   isg-guardian stop        停止守护服务
   isg-guardian restart     重启守护服务
   isg-guardian status      查看运行状态
@@ -598,6 +627,12 @@ def main():
         'command',
         choices=['start', 'stop', 'restart', 'status', 'logs', 'restart-isg'],
         help='要执行的命令'
+    )
+    
+    parser.add_argument(
+        '-d', '--daemon',
+        action='store_true',
+        help='后台运行模式（仅适用于start命令）'
     )
     
     parser.add_argument(
@@ -622,7 +657,9 @@ def main():
     
     # 执行对应命令
     if args.command == 'start':
-        success = guardian.start_daemon()
+        # 默认前台运行，除非指定了--daemon参数
+        foreground = not args.daemon
+        success = guardian.start_daemon(foreground=foreground)
         sys.exit(0 if success else 1)
         
     elif args.command == 'stop':
